@@ -12,7 +12,7 @@ const justPressed = {};
 window.addEventListener('keydown', e => {
   justPressed[e.code] = !keys[e.code];
   keys[e.code] = true;
-  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code))
+  if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'KeyS'].includes(e.code))
     e.preventDefault();
 });
 window.addEventListener('keyup', e => { keys[e.code] = false; });
@@ -57,6 +57,38 @@ class Bullet {
   }
 }
 
+// ── EnemyBullet ───────────────────────────────────────────────────────────────
+class EnemyBullet {
+  constructor(x, y, angle) {
+    this.x = x;
+    this.y = y;
+    const SPEED = 300;
+    this.vx = Math.cos(angle) * SPEED;
+    this.vy = Math.sin(angle) * SPEED;
+    this.ttl  = 3;
+    this.radius = 3;
+    this.dead = false;
+  }
+
+  update(dt) {
+    this.x = wrap(this.x + this.vx * dt, W);
+    this.y = wrap(this.y + this.vy * dt, H);
+    this.ttl -= dt;
+    if (this.ttl <= 0) this.dead = true;
+  }
+
+  draw() {
+    ctx.fillStyle = '#ff4444';
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffaa00';
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 // ── Asteroid ──────────────────────────────────────────────────────────────────
 const RADII  = [0, 16, 30, 50, 40];   // por tamaño 1, 2, 3, 4 (estrella fugaz)
 const SPEEDS = [0, 85, 55, 32, 130]; // velocidad base por tamaño
@@ -78,6 +110,8 @@ class Asteroid {
     this.vy = Math.sin(angle) * speed;
     this.rotSpeed = rand(-1.2, 1.2);
     this.rot = rand(0, Math.PI * 2);
+    this.shootCooldown = rand(1.5, 4);
+    this.shootTimer = this.shootCooldown;
 
     // Polígono irregular (o estrella de 5 puntas para la fugaz)
     this.verts = [];
@@ -97,7 +131,7 @@ class Asteroid {
     }
   }
 
-  update(dt) {
+  update(dt, shipX, shipY){
     this.x   = wrap(this.x + this.vx * dt, W);
     this.y   = wrap(this.y + this.vy * dt, H);
     this.rot += this.rotSpeed * dt;
@@ -141,7 +175,10 @@ class Asteroid {
 
 // ── Ship ──────────────────────────────────────────────────────────────────────
 class Ship {
-  constructor() { this.reset(); }
+  constructor(skinKey = 'classic') {
+    this.skinKey = skinKey;
+    this.reset();
+  }
 
   reset() {
     this.x      = W / 2;
@@ -156,6 +193,21 @@ class Ship {
     this.dead          = false;
     this.speedPowerupActive = false;
     this.speedPowerupTimer = 0;
+    this.tripleShotActive = false;
+    this.tripleShotTimer = 0;
+    this.shieldHits = 0;
+    this.shieldActive = false;
+  }
+
+  toggleShield() {
+    if (this.dead) return;
+    if (this.shieldActive) {
+      this.shieldActive = false;
+      this.shieldHits = 0;
+    } else {
+      this.shieldActive = true;
+      this.shieldHits = 3;
+    }
   }
 
   update(dt) {
@@ -187,6 +239,13 @@ class Ship {
       }
     }
 
+    if (this.tripleShotActive) {
+      this.tripleShotTimer -= dt;
+      if (this.tripleShotTimer <= 0) {
+        this.tripleShotActive = false;
+      }
+    }
+
     this.x = wrap(this.x + this.vx * dt, W);
     this.y = wrap(this.y + this.vy * dt, H);
   }
@@ -194,10 +253,18 @@ class Ship {
   tryShoot() {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
-    const NOSE = 21;
-    const ox = this.x + Math.cos(this.angle) * NOSE;
-    const oy = this.y + Math.sin(this.angle) * NOSE;
-    return [new Bullet(ox, oy, this.angle)];
+    const OX = Math.cos(this.angle) * NOSE;
+    const OY = Math.sin(this.angle) * NOSE;
+    const count  = this.tripleShotActive ? 3 : 1;
+    const SPREAD = 6;
+    const bullets = [];
+    for (let i = 0; i < count; i++) {
+      const off = (i - (count - 1) / 2) * SPREAD;
+      const ox = this.x + OX + Math.cos(this.angle + Math.PI / 2) * off;
+      const oy = this.y + OY + Math.sin(this.angle + Math.PI / 2) * off;
+      bullets.push(new Bullet(ox, oy, this.angle));
+    }
+    return bullets;
   }
 
   draw() {
@@ -205,13 +272,32 @@ class Ship {
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
+    const skin = SHIP_SKINS[this.skinKey];
+    const t = performance.now() / 1000;
+
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.angle);
 
+    // Animación custom del skin (glow, etc.)
+    if (skin.drawExtras) skin.drawExtras(ctx, t, this);
+
+    // Indicador visual de triple disparo activo
+    if (this.tripleShotActive) {
+      ctx.strokeStyle = '#00e5ff';
+      ctx.lineWidth   = 2;
+      ctx.lineJoin    = 'round';
+      ctx.beginPath();
+      ctx.moveTo( 20,  0);
+      ctx.lineTo( 32, -6);
+      ctx.moveTo( 20,  0);
+      ctx.lineTo( 32,  6);
+      ctx.stroke();
+    }
+
     // Indicador visual de velocidad activa
     if (this.speedPowerupActive) {
-      ctx.strokeStyle = '#ffd700';
+      ctx.strokeStyle = skin.speedIndicator;
       ctx.lineWidth   = 2.5;
       ctx.lineJoin    = 'round';
       ctx.beginPath();
@@ -223,30 +309,41 @@ class Ship {
       ctx.stroke();
     }
 
-    ctx.strokeStyle = '#fff';
+    // Silueta principal
+    ctx.strokeStyle = skin.color;
     ctx.lineWidth   = 1.5;
     ctx.lineJoin    = 'round';
 
-    // Silueta clásica: triángulo con muesca trasera
     ctx.beginPath();
-    ctx.moveTo( 20,  0);   // nariz
-    ctx.lineTo(-12, -9);   // ala izquierda
-    ctx.lineTo( -7,  0);   // muesca trasera
-    ctx.lineTo(-12,  9);   // ala derecha
+    ctx.moveTo(skin.vertices[0][0], skin.vertices[0][1]);
+    for (let i = 1; i < skin.vertices.length; i++) {
+      ctx.lineTo(skin.vertices[i][0], skin.vertices[i][1]);
+    }
     ctx.closePath();
     ctx.stroke();
 
-    // Llama del propulsor
-    if (this.thrusting && Math.random() > 0.35) {
-      ctx.beginPath();
-      ctx.moveTo(-8, -4);
-      ctx.lineTo(-8 - rand(6, 14), 0);
-      ctx.lineTo(-8,  4);
-      ctx.strokeStyle = 'rgba(255, 130, 0, 0.85)';
-      ctx.stroke();
+    // Llama del propulsor con animación según config del skin
+    if (this.thrusting) {
+      const thr = skin.thruster;
+      const shouldDraw = thr.flicker ? (Math.random() > 0.35)
+                          : thr.pulse ? (Math.sin(t * 15) > 0.2)
+                          : true;
+      if (shouldDraw) {
+        const len = rand(...thr.lengthRange);
+        ctx.beginPath();
+        ctx.moveTo(-8, -4);
+        ctx.lineTo(-8 - len, 0);
+        ctx.lineTo(-8,  4);
+        ctx.strokeStyle = thr.color;
+        ctx.stroke();
+      }
     }
 
     ctx.restore();
+  }
+
+  setSkin(key) {
+    if (SHIP_SKINS[key]) this.skinKey = key;
   }
 }
 
@@ -287,7 +384,7 @@ class Powerup {
     this.x = x;
     this.y = y;
     this.radius = 8;
-    this.type = 'velocidad';
+    this.type = Math.random() < 0.5 ? 'triple' : 'velocidad';
     this.ttl = 5;
     this.dead = false;
     this.rot = rand(0, Math.PI * 2);
@@ -305,7 +402,7 @@ class Powerup {
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.rotate(this.rot);
-    ctx.fillStyle = '#ffd700';
+    ctx.fillStyle = this.type === 'triple' ? '#00e5ff' : '#ffd700';
     ctx.beginPath();
     ctx.moveTo(0, -this.radius);
     ctx.lineTo(this.radius / 2, this.radius / 3);
@@ -317,11 +414,148 @@ class Powerup {
   }
 }
 
+// ── Pantalla de Inicio ────────────────────────────────────────────────────────
+class StartScreen {
+  constructor() {
+    this.selectedIndex = 0;
+    this.previewTime = 0;
+    this.highScore = parseInt(localStorage.getItem('asteroidsHighScore') || '0', 10);
+    this.animTime = 0;
+  }
+
+  update(dt) {
+    this.animTime += dt;
+    this.previewTime += dt;
+  }
+
+  handleInput() {
+    if (pressed('ArrowLeft')) this.selectedIndex = (this.selectedIndex - 1 + SKIN_ORDER.length) % SKIN_ORDER.length;
+    if (pressed('ArrowRight')) this.selectedIndex = (this.selectedIndex + 1) % SKIN_ORDER.length;
+    if (pressed('Space') || pressed('Enter')) {
+      const key = SKIN_ORDER[this.selectedIndex];
+      localStorage.setItem('shipSkin', key);
+      state = 'playing';
+      initGame(key);
+    }
+  }
+
+  draw() {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Título
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 48px monospace';
+    ctx.fillText('ASTEROIDS', W/2, 80);
+
+    // High Score
+    ctx.font = '16px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(`MEJOR PUNTAJE: ${this.highScore}`, W/2, 115);
+
+    // Controles
+    ctx.font = '13px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillText('← →  Seleccionar skin    ESPACIO / ENTER  Jugar', W/2, H - 60);
+    ctx.fillText('↑ Propulsar    ← → Rotar    ESPACIO Disparar', W/2, H - 40);
+
+    // Grid de skins
+    const cols = 3;
+    const startX = W/2 - (cols * 100 - 20)/2;
+    const startY = 160;
+
+    SKIN_ORDER.forEach((key, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = startX + col * 100;
+      const y = startY + row * 110;
+
+      // Fondo tarjeta
+      ctx.fillStyle = i === this.selectedIndex ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.04)';
+      ctx.strokeStyle = i === this.selectedIndex ? '#0ff' : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = i === this.selectedIndex ? 2 : 1;
+      ctx.fillRect(x, y, 90, 90);
+      ctx.strokeRect(x, y, 90, 90);
+
+      // Miniatura: renderiza nave estática
+      this.drawSkinThumbnail(key, x + 45, y + 40);
+
+      // Nombre
+      ctx.fillStyle = i === this.selectedIndex ? '#0ff' : '#aaa';
+      ctx.font = '12px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(SHIP_SKINS[key].name, x + 45, y + 98);
+    });
+
+    // Preview grande del skin seleccionado (animado)
+    this.drawLargePreview(SKIN_ORDER[this.selectedIndex], W/2, H - 130);
+  }
+
+  drawSkinThumbnail(key, cx, cy) {
+    const skin = SHIP_SKINS[key];
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-Math.PI/2);
+    ctx.strokeStyle = skin.color;
+    ctx.lineWidth = 1.8;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(skin.vertices[0][0]*0.6, skin.vertices[0][1]*0.6);
+    for (let i=1;i<skin.vertices.length;i++) {
+      ctx.lineTo(skin.vertices[i][0]*0.6, skin.vertices[i][1]*0.6);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  drawLargePreview(key, cx, cy) {
+    const skin = SHIP_SKINS[key];
+    const t = this.previewTime;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-Math.PI/2 + Math.sin(t * 0.7) * 0.15);
+
+    if (skin.drawExtras) skin.drawExtras(ctx, t, {});
+
+    // Nave
+    ctx.strokeStyle = skin.color;
+    ctx.lineWidth = 2.5;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(skin.vertices[0][0]*1.3, skin.vertices[0][1]*1.3);
+    for (let i=1;i<skin.vertices.length;i++) {
+      ctx.lineTo(skin.vertices[i][0]*1.3, skin.vertices[i][1]*1.3);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Thruster animado (idle)
+    const thr = skin.thruster;
+    const pulse = thr.pulse ? (0.5 + Math.sin(t * 8) * 0.5) : 1;
+    ctx.beginPath();
+    ctx.moveTo(-8*1.3, -4*1.3);
+    ctx.lineTo((-8 - 10*pulse)*1.3, 0);
+    ctx.lineTo(-8*1.3, 4*1.3);
+    let thrColor = thr.color;
+    if (thr.pulse) {
+      thrColor = thr.color.replace('0.9', String(0.6*pulse)).replace('0.95', String(0.7*pulse));
+    }
+    ctx.strokeStyle = thrColor;
+    ctx.stroke();
+
+    ctx.restore();
+  }
+}
+
 // ── Estado del juego ──────────────────────────────────────────────────────────
-let ship, bullets, asteroids, particles, powerups;
+let ship, bullets, enemyBullets, asteroids, particles, powerups;
 let score, lives, level;
-let state;      // 'playing' | 'dead' | 'gameover'
+let state = 'start';      // 'start' | 'playing' | 'dead' | 'gameover'
 let deadTimer;
+let startScreen;
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -336,9 +570,11 @@ function spawnAsteroids(count) {
   }
 }
 
-function initGame() {
-  ship          = new Ship();
+function initGame(skinKey) {
+  const key = skinKey || localStorage.getItem('shipSkin') || 'classic';
+  ship          = new Ship(key);
   bullets   = [];
+  enemyBullets = [];
   asteroids = [];
   particles = [];
   powerups = [];
@@ -367,6 +603,8 @@ function killShip() {
   lives--;
   if (lives <= 0) {
     state = 'gameover';
+    const hs = parseInt(localStorage.getItem('asteroidsHighScore') || '0', 10);
+    if (score > hs) localStorage.setItem('asteroidsHighScore', String(score));
   } else {
     state     = 'dead';
     deadTimer = 2;
@@ -386,9 +624,20 @@ function update(dt) {
     deadTimer -= dt;
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
-    asteroids.forEach(a => a.update(dt));
+    const newEnemyBullets = [];
+  for (const a of asteroids) {
+    const result = a.update(dt, ship.x, ship.y);
+    if (result) newEnemyBullets.push(result);
+  }
+  enemyBullets.push(...newEnemyBullets);
+  enemyBullets = enemyBullets.filter(b => !b.dead);
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
     return;
+  }
+
+  // Toggle shield
+  if (pressed('KeyS')) {
+    ship.toggleShield();
   }
 
   // Disparar
@@ -398,7 +647,13 @@ function update(dt) {
 
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
-  asteroids.forEach(a => a.update(dt));
+  const newEnemyBullets = [];
+  for (const a of asteroids) {
+    const result = a.update(dt, ship.x, ship.y);
+    if (result) newEnemyBullets.push(result);
+  }
+  enemyBullets.push(...newEnemyBullets);
+  enemyBullets = enemyBullets.filter(b => !b.dead);
   particles.forEach(p => p.update(dt));
   powerups.forEach(p => p.update(dt));
 
@@ -414,7 +669,6 @@ function update(dt) {
         a.dead = true;
         score += POINTS[a.size];
         explode(a.x, a.y, a.size * 5);
-        // 25% de probabilidad de spawnear powerup al destruir asteroide grande
         if (a.size === 3 && Math.random() < 0.25) {
           powerups.push(new Powerup(a.x, a.y));
         }
@@ -422,6 +676,32 @@ function update(dt) {
       }
     }
   }
+
+  // Enemigo bala vs escudo
+  for (const eb of enemyBullets) {
+    if (eb.dead) continue;
+    if (ship.shieldActive && ship.shieldHits > 0 && dist(eb, ship) < ship.radius + 26) {
+      eb.dead = true;
+      ship.shieldHits--;
+      explode(eb.x, eb.y, 6);
+      if (ship.shieldHits <= 0) {
+        ship.shieldActive = false;
+      }
+    }
+  }
+  enemyBullets = enemyBullets.filter(b => !b.dead);
+
+  // Enemigo bala vs nave (sin escudo)
+  if (ship.invincible <= 0 && !ship.shieldActive) {
+    for (const eb of enemyBullets) {
+      if (!eb.dead && dist(eb, ship) < ship.radius + eb.radius) {
+        eb.dead = true;
+        killShip();
+        break;
+      }
+    }
+  }
+
   asteroids = asteroids.filter(a => !a.dead).concat(newAsteroids);
   bullets   = bullets.filter(b => !b.dead);
 
@@ -469,6 +749,21 @@ function drawLifeIcon(x, y) {
   ctx.restore();
 }
 
+function drawShieldIcon(x, y) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.strokeStyle = '#00c8ff';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 7, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-5, 0);
+  ctx.lineTo(5, 0);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawHUD() {
   ctx.fillStyle = '#fff';
   ctx.font = '15px monospace';
@@ -481,6 +776,15 @@ function drawHUD() {
 
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
+
+  // Shield indicator
+  if (ship.shieldActive && ship.shieldHits > 0) {
+    ctx.textAlign = 'right';
+    ctx.fillStyle = ship.shieldHits <= 1 ? '#ff6432' : '#00c8ff';
+    ctx.font = 'bold 14px monospace';
+    ctx.fillText(`SHIELD ${ship.shieldHits}`, W - 14, 48);
+    drawShieldIcon(W - 14, 58);
+  }
 
 }
 
@@ -500,6 +804,7 @@ function draw() {
 
   particles.forEach(p => p.draw());
   asteroids.forEach(a => a.draw());
+  enemyBullets.forEach(b => b.draw());
   bullets.forEach(b => b.draw());
   powerups.forEach(p => p.draw());
   ship.draw();
@@ -516,8 +821,16 @@ let lastTime = null;
 function loop(ts) {
   const dt = lastTime === null ? 0 : Math.min((ts - lastTime) / 1000, 0.05);
   lastTime = ts;
-  update(dt);
-  draw();
+
+  if (state === 'start') {
+    if (!startScreen) startScreen = new StartScreen();
+    startScreen.update(dt);
+    startScreen.handleInput();
+    startScreen.draw();
+  } else {
+    update(dt);
+    draw();
+  }
   requestAnimationFrame(loop);
 }
 
