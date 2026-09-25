@@ -180,13 +180,22 @@ class Ship {
     this.reset();
   }
 
+  get skin() {
+    return SHIP_SKINS[this.skinKey];
+  }
+
+  // Distancia del morro al centro: de aquí salen las balas
+  get nose() {
+    return this.skin.vertices[0][0];
+  }
+
   reset() {
     this.x      = W / 2;
     this.y      = H / 2;
     this.angle  = -Math.PI / 2;
     this.vx     = 0;
     this.vy     = 0;
-    this.radius = 12;
+    this.radius = this.skin.radius || 12;
     this.thrusting     = false;
     this.invincible    = 3;
     this.shootCooldown = 0;
@@ -253,8 +262,8 @@ class Ship {
   tryShoot() {
     if (this.shootCooldown > 0 || this.dead) return [];
     this.shootCooldown = 0.2;
-    const OX = Math.cos(this.angle) * NOSE;
-    const OY = Math.sin(this.angle) * NOSE;
+    const OX = Math.cos(this.angle) * this.nose;
+    const OY = Math.sin(this.angle) * this.nose;
     const count  = this.tripleShotActive ? 3 : 1;
     const SPREAD = 6;
     const bullets = [];
@@ -272,7 +281,7 @@ class Ship {
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
 
-    const skin = SHIP_SKINS[this.skinKey];
+    const skin = this.skin;
     const t = performance.now() / 1000;
 
     ctx.save();
@@ -288,10 +297,10 @@ class Ship {
       ctx.lineWidth   = 2;
       ctx.lineJoin    = 'round';
       ctx.beginPath();
-      ctx.moveTo( 20,  0);
-      ctx.lineTo( 32, -6);
-      ctx.moveTo( 20,  0);
-      ctx.lineTo( 32,  6);
+      ctx.moveTo(this.nose, 0);
+      ctx.lineTo(this.nose + 12, -6);
+      ctx.moveTo(this.nose, 0);
+      ctx.lineTo(this.nose + 12, 6);
       ctx.stroke();
     }
 
@@ -301,10 +310,10 @@ class Ship {
       ctx.lineWidth   = 2.5;
       ctx.lineJoin    = 'round';
       ctx.beginPath();
-      ctx.moveTo( 20,  0);
-      ctx.lineTo(-12, -9);
-      ctx.lineTo( -7,  0);
-      ctx.lineTo(-12,  9);
+      ctx.moveTo(skin.vertices[0][0], skin.vertices[0][1]);
+      for (let i = 1; i < skin.vertices.length; i++) {
+        ctx.lineTo(skin.vertices[i][0], skin.vertices[i][1]);
+      }
       ctx.closePath();
       ctx.stroke();
     }
@@ -330,10 +339,12 @@ class Ship {
                           : true;
       if (shouldDraw) {
         const len = rand(...thr.lengthRange);
+        const ax  = thr.anchorX || -8;
+        const hw  = thr.width || 4;
         ctx.beginPath();
-        ctx.moveTo(-8, -4);
-        ctx.lineTo(-8 - len, 0);
-        ctx.lineTo(-8,  4);
+        ctx.moveTo(ax, -hw);
+        ctx.lineTo(ax - len, 0);
+        ctx.lineTo(ax, hw);
         ctx.strokeStyle = thr.color;
         ctx.stroke();
       }
@@ -535,10 +546,12 @@ class StartScreen {
     // Thruster animado (idle)
     const thr = skin.thruster;
     const pulse = thr.pulse ? (0.5 + Math.sin(t * 8) * 0.5) : 1;
+    const ax = (thr.anchorX || -8) * 1.3;
+    const hw = (thr.width || 4) * 1.3;
     ctx.beginPath();
-    ctx.moveTo(-8*1.3, -4*1.3);
-    ctx.lineTo((-8 - 10*pulse)*1.3, 0);
-    ctx.lineTo(-8*1.3, 4*1.3);
+    ctx.moveTo(ax, -hw);
+    ctx.lineTo(ax - 10 * pulse * 1.3, 0);
+    ctx.lineTo(ax, hw);
     let thrColor = thr.color;
     if (thr.pulse) {
       thrColor = thr.color.replace('0.9', String(0.6*pulse)).replace('0.95', String(0.7*pulse));

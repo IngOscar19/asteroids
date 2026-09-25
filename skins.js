@@ -56,7 +56,19 @@ const SHIP_SKINS = {
       ctx.lineTo(0, 8);
       ctx.stroke();
     }
+  },
+  purple: {
+    name: 'Púrpura',
+    color: '#a55cff',
+    radius: 18,
+    vertices: [[32, 0], [-18, -15], [-9, 0], [-18, 15]],
+    thruster: { color: 'rgba(180,90,255,0.9)', pulse: true, anchorX: -17, width: 6, lengthRange: [9, 18] },
+    speedIndicator: '#e0b3ff',
+    drawExtras: (ctx, t) => {
+      ctx.shadowBlur = 14 + Math.sin(t * 4) * 7;
+      ctx.shadowColor = '#a55cff';
+    }
   }
 };
 
-const SKIN_ORDER = ['classic', 'neon', 'red', 'stealth', 'gold'];
+const SKIN_ORDER = ['classic', 'neon', 'red', 'stealth', 'gold', 'purple'];
