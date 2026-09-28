@@ -1,1 +1,4 @@
 /worktree
+
+# Artefactos intermedios de issue-triage.yml
+/.triage/

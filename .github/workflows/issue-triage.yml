@@ -1,0 +1,139 @@
+name: Issue triage
+
+# Triaje de issues SIN NINGUNA CREDENCIAL.
+#
+# Este workflow no usa GITHUB_TOKEN ni ningun otro secret de GitHub, y no pide
+# permiso de escritura: la API de GitHub no permite escribir sin autenticarse, y
+# este repositorio no quiere guardar ningun token. En vez de publicar el triaje,
+# lo propone: deja en el resumen del run el bloque formateado y las labels
+# sugeridas, y una persona decide si lo aplica.
+#
+# Lo unico que lee de la red es el issue y los issues abiertos (GET, sin
+# cabecera de autorizacion), que en un repo publico no necesita token.
+#
+#   - Clasificacion por reglas (determinista, gratis) + refinamiento con IA.
+#   - Si la IA falla o se agota el tiempo, se propone igual con reglas solamente.
+#   - El secret OPENCODE_API_KEY es del proveedor de opencode, no de GitHub.
+#   - Re-triage manual: comentar "/triage" en el issue, o lanzarlo a mano.
+
+on:
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Numero de issue a re-procesar"
+        required: true
+        type: string
+
+# Unico permiso: poder leer el codigo. Ni issues, ni contents: write.
+permissions:
+  contents: read
+
+# Un issue a la vez: evita que dos corridas se peleen por el mismo archivo.
+concurrency:
+  group: issue-triage-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    if: >-
+      (github.event_name == 'issues' &&
+       github.event.issue.user.type != 'Bot' &&
+       github.actor != 'github-actions[bot]') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.comment.user.type != 'Bot' &&
+       contains(github.event.comment.body, '/triage')) ||
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TRIAGE_DIR: ${{ github.workspace }}/.triage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Comprobar que no hay ningun token en el entorno
+        run: |
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            echo "::error::GITHUB_TOKEN esta definido; este workflow debe correr sin credenciales"
+            exit 1
+          fi
+          echo "ok: sin tokens en el entorno"
+
+      - name: Tests de la logica de triaje
+        run: node --test .github/scripts/triage.test.mjs
+
+      # Corre collect y report de verdad contra una API de GitHub falsa en
+      # localhost: verifica que nunca se mande un verbo de escritura ni una
+      # cabecera de autorizacion. No usa la red publica.
+      - name: Prueba de extremo a extremo
+        run: node .github/scripts/e2e.mjs
+
+      - name: Resolver version de opencode
+        id: oc-version
+        run: |
+          version=$(curl -sf https://api.github.com/repos/anomalyco/opencode/releases/latest \
+            | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+          echo "version=${version:-latest}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache de opencode
+        id: oc-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.opencode/bin
+          key: opencode-${{ runner.os }}-${{ runner.arch }}-${{ steps.oc-version.outputs.version }}
+
+      - name: Instalar opencode
+        if: steps.oc-cache.outputs.cache-hit != 'true'
+        run: curl -fsSL https://opencode.ai/install | bash
+
+      - name: Agregar opencode al PATH
+        run: echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      # Lee el issue, clasifica por reglas, arma el mapa de archivos y el prompt.
+      # Escribe .triage/{issue,rules}.json y prompt.txt. Solo peticiones GET.
+      - name: Recolectar datos y clasificar por reglas
+        run: node .github/scripts/triage.mjs collect
+
+      # Opcional a proposito: report funciona sin esto.
+      - name: Analizar con opencode
+        id: ai
+        continue-on-error: true
+        timeout-minutes: 5
+        env:
+          OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+          OPENCODE_DISABLE_AUTOUPDATE: "true"
+        run: |
+          set +e
+          opencode run \
+            --format json \
+            --model opencode/big-pickle \
+            --agent plan \
+            --title "Triage issue #${{ github.event.issue.number || inputs.issue_number }}" \
+            "$(cat "$TRIAGE_DIR/prompt.txt")" > "$TRIAGE_DIR/ai.jsonl" 2> "$TRIAGE_DIR/ai.log"
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          echo "--- ultimas lineas de ai.log ---"
+          tail -n 30 "$TRIAGE_DIR/ai.log" || true
+          echo "exit_code=$code"
+
+      # Valida la salida de la IA contra la allowlist, arma el bloque y las labels
+      # sugeridas, y las deja en el resumen del run. No escribe en GitHub.
+      - name: Proponer bloque y labels
+        run: node .github/scripts/triage.mjs report
+
+      - name: Subir la propuesta como artefacto
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-${{ github.event.issue.number || inputs.issue_number }}
+          path: ${{ env.TRIAGE_DIR }}
+          retention-days: 14
+          if-no-files-found: warn
