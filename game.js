@@ -2,8 +2,30 @@
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+
+// El juego se juega en un campo lógico de 800x600 y se dibuja al doble
+// (1600x1200): la pantalla se ve el doble de grande sin alterar la dificultad,
+// porque W y H siguen siendo las coordenadas reales del juego.
 const W = 800;
 const H = 600;
+const ZOOM = 2;
+
+// ── Pantalla ──────────────────────────────────────────────────────────────────
+// El lienzo no tiene tamaño fijo en el HTML: se calcula aquí y se ajusta al
+// tamaño de la ventana (hasta 1600x1200) para que quepa en pantallas pequeñas.
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width  = W * ZOOM * dpr;
+  canvas.height = H * ZOOM * dpr;
+
+  const fit = Math.min(1, window.innerWidth / (W * ZOOM), window.innerHeight / (H * ZOOM));
+  canvas.style.width  = `${W * ZOOM * fit}px`;
+  canvas.style.height = `${H * ZOOM * fit}px`;
+
+  // Todo lo que se dibuja a partir de aquí usa coordenadas lógicas de 800x600.
+  ctx.setTransform(ZOOM * dpr, 0, 0, ZOOM * dpr, 0, 0);
+}
+window.addEventListener('resize', resize);
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 const keys = {};
@@ -847,5 +869,6 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
+resize();
 initGame();
 requestAnimationFrame(loop);
