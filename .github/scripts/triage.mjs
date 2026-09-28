@@ -630,23 +630,49 @@ export function renderBlock(ctx) {
 }
 
 // ---------------------------------------------------------------------------
-// GitHub API (solo lectura)
+// GitHub API
 // ---------------------------------------------------------------------------
 
-// Unico punto de salida hacia la API. Se niega cualquier verbo distinto de GET
-// y jamas envia una cabecera de autorizacion: la garantia de que este script no
-// usa tokens es que no tiene con que enviarla.
-async function ghGet(endpoint) {
+async function ghRequest(endpoint, method = "GET", body = null) {
   if (/^\//.test(endpoint) === false) throw new Error(`endpoint invalido: ${endpoint}`)
-  const res = await fetch(`${API}${endpoint}`, {
-    method: "GET",
-    headers: { "x-github-api-version": "2022-11-28", "user-agent": "asteroids-issue-triage" },
-  })
+  const headers = {
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "asteroids-issue-triage",
+    "content-type": "application/json",
+  }
+  if (process.env.GITHUB_TOKEN) {
+    headers["authorization"] = `Bearer ${process.env.GITHUB_TOKEN}`
+  }
+  const options = {
+    method,
+    headers,
+  }
+  if (body) {
+    options.body = JSON.stringify(body)
+  }
+  const res = await fetch(`${API}${endpoint}`, options)
   if (!res.ok) {
     const detail = await res.text().catch(() => "")
-    throw new Error(`GET ${endpoint} -> ${res.status} ${res.statusText} ${detail.slice(0, 300)}`)
+    throw new Error(`${method} ${endpoint} -> ${res.status} ${res.statusText} ${detail.slice(0, 300)}`)
   }
-  return res.json()
+  if (res.status === 204) return null
+  return res.json().catch(() => null)
+}
+
+async function ghGet(endpoint) {
+  return ghRequest(endpoint, "GET")
+}
+
+async function ghPatch(endpoint, body) {
+  return ghRequest(endpoint, "PATCH", body)
+}
+
+async function ghPost(endpoint, body) {
+  return ghRequest(endpoint, "POST", body)
+}
+
+async function ghDelete(endpoint) {
+  return ghRequest(endpoint, "DELETE")
 }
 
 // ---------------------------------------------------------------------------
@@ -910,7 +936,8 @@ export function renderSummary(report, issue) {
   return out.join("\n") + "\n"
 }
 
-function report() {
+async function report() {
+  const apply = process.argv.includes("--apply")
   const dir = triageDir()
   const issue = JSON.parse(fs.readFileSync(path.join(dir, "issue.json"), "utf8"))
   const state = JSON.parse(fs.readFileSync(path.join(dir, "rules.json"), "utf8"))
@@ -933,6 +960,40 @@ function report() {
       fs.appendFileSync(stepSummary, summary)
     } catch (err) {
       console.log(`[report] no se pudo escribir el resumen del run: ${err.message}`)
+    }
+  }
+
+  if (apply && process.env.GITHUB_TOKEN) {
+    const event = loadEvent()
+    const { owner, name, number } = resolveTarget(event)
+    console.log(`[report] Aplicando cambios directamente en el issue #${number}...`)
+
+    // 1. Actualizar el cuerpo del issue con el bloque formateado
+    try {
+      await ghPatch(`/repos/${owner}/${name}/issues/${number}`, { body: result.suggestedBody })
+      console.log(`[report] Cuerpo del issue #${number} actualizado exitosamente.`)
+    } catch (err) {
+      console.error(`[report] Error al actualizar cuerpo del issue: ${err.message}`)
+    }
+
+    // 2. Agregar labels sugeridas
+    if (result.toAdd.length > 0) {
+      try {
+        await ghPost(`/repos/${owner}/${name}/issues/${number}/labels`, { labels: result.toAdd })
+        console.log(`[report] Labels agregadas: ${result.toAdd.join(", ")}`)
+      } catch (err) {
+        console.error(`[report] Error al agregar labels: ${err.message}`)
+      }
+    }
+
+    // 3. Quitar labels obsoletas
+    for (const label of result.toRemove) {
+      try {
+        await ghDelete(`/repos/${owner}/${name}/issues/${number}/labels/${encodeURIComponent(label)}`)
+        console.log(`[report] Label obsoleta removida: ${label}`)
+      } catch (err) {
+        console.warn(`[report] No se pudo remover label ${label}: ${err.message}`)
+      }
     }
   }
 

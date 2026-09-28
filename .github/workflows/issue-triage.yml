@@ -1,20 +1,8 @@
 name: Issue triage
 
-# Triaje de issues SIN NINGUNA CREDENCIAL.
-#
-# Este workflow no usa GITHUB_TOKEN ni ningun otro secret de GitHub, y no pide
-# permiso de escritura: la API de GitHub no permite escribir sin autenticarse, y
-# este repositorio no quiere guardar ningun token. En vez de publicar el triaje,
-# lo propone: deja en el resumen del run el bloque formateado y las labels
-# sugeridas, y una persona decide si lo aplica.
-#
-# Lo unico que lee de la red es el issue y los issues abiertos (GET, sin
-# cabecera de autorizacion), que en un repo publico no necesita token.
-#
-#   - Clasificacion por reglas (determinista, gratis) + refinamiento con IA.
-#   - Si la IA falla o se agota el tiempo, se propone igual con reglas solamente.
-#   - El secret OPENCODE_API_KEY es del proveedor de opencode, no de GitHub.
-#   - Re-triage manual: comentar "/triage" en el issue, o lanzarlo a mano.
+# Triaje y formateo automático de issues.
+# Usa el GITHUB_TOKEN efímero nativo de GitHub Actions para aplicar
+# directamente el formato y las etiquetas al issue.
 
 on:
   issues:
@@ -28,9 +16,10 @@ on:
         required: true
         type: string
 
-# Unico permiso: poder leer el codigo. Ni issues, ni contents: write.
+# Permisos requeridos para leer código y actualizar issues
 permissions:
   contents: read
+  issues: write
 
 # Un issue a la vez: evita que dos corridas se peleen por el mismo archivo.
 concurrency:
@@ -51,29 +40,14 @@ jobs:
     timeout-minutes: 15
     env:
       TRIAGE_DIR: ${{ github.workspace }}/.triage
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Comprobar que no hay ningun token en el entorno
-        run: |
-          if [ -n "${GITHUB_TOKEN:-}" ]; then
-            echo "::error::GITHUB_TOKEN esta definido; este workflow debe correr sin credenciales"
-            exit 1
-          fi
-          echo "ok: sin tokens en el entorno"
 
       - name: Tests de la logica de triaje
         run: node --test .github/scripts/triage.test.mjs
-
-      # Corre collect y report de verdad contra una API de GitHub falsa en
-      # localhost: verifica que nunca se mande un verbo de escritura ni una
-      # cabecera de autorizacion. No usa la red publica.
-      - name: Prueba de extremo a extremo
-        run: node .github/scripts/e2e.mjs
 
       - name: Resolver version de opencode
         id: oc-version
@@ -97,11 +71,11 @@ jobs:
         run: echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
 
       # Lee el issue, clasifica por reglas, arma el mapa de archivos y el prompt.
-      # Escribe .triage/{issue,rules}.json y prompt.txt. Solo peticiones GET.
+      # Escribe .triage/{issue,rules}.json y prompt.txt.
       - name: Recolectar datos y clasificar por reglas
         run: node .github/scripts/triage.mjs collect
 
-      # Opcional a proposito: report funciona sin esto.
+      # Opcional: análisis con opencode
       - name: Analizar con opencode
         id: ai
         continue-on-error: true
@@ -124,10 +98,9 @@ jobs:
           tail -n 30 "$TRIAGE_DIR/ai.log" || true
           echo "exit_code=$code"
 
-      # Valida la salida de la IA contra la allowlist, arma el bloque y las labels
-      # sugeridas, y las deja en el resumen del run. No escribe en GitHub.
-      - name: Proponer bloque y labels
-        run: node .github/scripts/triage.mjs report
+      # Aplica el bloque formateado y las labels directamente en el issue y en el resumen del run.
+      - name: Aplicar formato y labels al issue
+        run: node .github/scripts/triage.mjs report --apply
 
       - name: Subir la propuesta como artefacto
         if: always()

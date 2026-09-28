@@ -68,19 +68,29 @@ const server = createServer((req, res) => {
       res.end(obj === null ? "" : JSON.stringify(obj))
     }
 
-    // Cualquier escritura es un fallo del test, no algo que haya que emular.
-    if (req.method !== "GET") {
-      return send(405, { message: `el script no deberia escribir: ${req.method} ${pathOnly}` })
-    }
-
     if (pathOnly === `/repos/${REPO}`) return send(200, { default_branch: "main" })
-    if (pathOnly === `/repos/${REPO}/issues`) return send(200, [...ISSUES.values()])
+    if (pathOnly === `/repos/${REPO}/issues` && req.method === "GET") return send(200, [...ISSUES.values()])
 
     const one = new RegExp(`^/repos/${REPO}/issues/(\\d+)$`).exec(pathOnly)
     if (one) {
       const issue = ISSUES.get(Number(one[1]))
       if (!issue) return send(404, { message: "Not Found" })
-      return send(200, issue)
+      if (req.method === "GET") return send(200, issue)
+      if (req.method === "PATCH") {
+        const parsed = JSON.parse(raw || "{}")
+        Object.assign(issue, parsed)
+        return send(200, issue)
+      }
+    }
+
+    const labelsRoute = new RegExp(`^/repos/${REPO}/issues/(\\d+)/labels$`).exec(pathOnly)
+    if (labelsRoute && req.method === "POST") {
+      return send(200, [{ name: "test-label" }])
+    }
+
+    const delLabelRoute = new RegExp(`^/repos/${REPO}/issues/(\\d+)/labels/([^/]+)$`).exec(pathOnly)
+    if (delLabelRoute && req.method === "DELETE") {
+      return send(200, [])
     }
 
     return send(404, { message: `mock sin ruta: ${req.method} ${pathOnly}` })
@@ -98,7 +108,6 @@ const gameLines = fs.readFileSync(path.join(REPO_ROOT, "game.js"), "utf8").split
 const GOOD_LINE = Math.max(1, Math.min(680, gameLines - 1))
 const BAD_LINE = gameLines + 5000
 
-// A proposito NO se define GITHUB_TOKEN: el script tiene que funcionar sin el.
 const env = {
   ...process.env,
   GITHUB_API_URL: `http://127.0.0.1:${port}`,
@@ -108,7 +117,7 @@ const env = {
 }
 delete env.GITHUB_TOKEN
 
-const script = (args) => run(process.execPath, [SCRIPT, ...args], { env, cwd: REPO_ROOT })
+const script = (args, customEnv = env) => run(process.execPath, [SCRIPT, ...args], { env: customEnv, cwd: REPO_ROOT })
 
 let failures = 0
 const check = async (name, fn) => {
@@ -153,7 +162,7 @@ console.log("report (sin IA -> solo reglas):")
 fs.writeFileSync(path.join(dir, "ai.jsonl"), "")
 let out = await script(["report"])
 let summary = out.stdout
-await check("avisa que no escribe nada", () => {
+await check("avisa que no escribe nada en modo propuesta", () => {
   assert.ok(summary.includes("no escribe nada"), "debe aclarar que es una propuesta")
 })
 await check("sugiere labels coherentes", () => {
@@ -177,7 +186,7 @@ await check("publico la taxonomia completa con color y descripcion", () => {
   assert.ok(summary.includes("| Label | Color | Para que sirve |"))
   assert.ok(summary.includes("`P0-critica`"))
 })
-await check("report no hablo con la API", () => {
+await check("report no hablo con la API sin --apply", () => {
   const before = calls.length
   return script(["report"]).then(() => {
     const writes = calls.slice(before).filter((c) => !c.startsWith("GET"))
@@ -268,7 +277,6 @@ await check("neutraliza HTML y scripts de la IA", () => {
 })
 
 console.log("idempotencia del bloque propuesto:")
-// El cuerpo publicado ya tiene un bloque de un triaje anterior con otra label.
 const prev = `texto previo\n\n---\n\n<!-- triage:start v1 -->\n<!-- triage:labels tipo:bug,P3-baja -->\nbloque viejo\n<!-- triage:end -->`
 const issueFile = path.join(dir, "issue.json")
 const issueJson = JSON.parse(fs.readFileSync(issueFile, "utf8"))
@@ -291,13 +299,24 @@ await check("el bloque propuesto no duplica marcadores", () => {
   assert.equal((block.match(/^---$/gm) || []).length, 0, "el bloque no debe traer separador propio")
 })
 
-// --- garantia final ---------------------------------------------------------
-await check("NINGUNA peticion fue de escritura", () => {
-  const writes = calls.filter((c) => !c.startsWith("GET"))
-  assert.equal(writes.length, 0, `escribio: ${writes.join(", ")}`)
+console.log("aplicacion directa con GITHUB_TOKEN y --apply:")
+const applyEnv = {
+  ...env,
+  GITHUB_TOKEN: "mock-token",
+  INPUT_ISSUE_NUMBER: String(NUMBER),
+}
+await script(["report", "--apply"], applyEnv)
+await check("envia PATCH para actualizar cuerpo del issue", () => {
+  assert.ok(calls.some((c) => c.startsWith(`PATCH /repos/${REPO}/issues/${NUMBER}`)), "debe enviar PATCH al issue")
 })
-await check("NINGUNA peticion llevo token", () => {
-  assert.equal(authHeaders.length, 0, `mando credenciales: ${authHeaders.join(" | ")}`)
+await check("envia POST para agregar labels", () => {
+  assert.ok(calls.some((c) => c.startsWith(`POST /repos/${REPO}/issues/${NUMBER}/labels`)), "debe enviar POST a /labels")
+})
+await check("envia DELETE para remover label obsoleta", () => {
+  assert.ok(calls.some((c) => c.startsWith(`DELETE /repos/${REPO}/issues/${NUMBER}/labels/`)), "debe enviar DELETE a /labels/...")
+})
+await check("envia cabecera authorization con el token", () => {
+  assert.ok(authHeaders.some((h) => h.includes("Bearer mock-token")), "debe incluir authorization: Bearer mock-token")
 })
 
 server.close()
